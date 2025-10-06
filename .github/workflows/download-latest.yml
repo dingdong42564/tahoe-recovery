@@ -1,4 +1,4 @@
-name: Tahoe Beta (latest) Recovery Image
+name: Tahoe builder 02-10 (latest) Recovery Image
 
 on:
   workflow_dispatch:
@@ -7,19 +7,20 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Clone gibMacOS
         run: |
           git clone https://github.com/corpnewt/gibMacOS.git
 
-      - name: Download macOS Installer (latest beta)
+      - name: Download macOS Installer (stable release)
         run: |
-          python ./gibMacOS/gibMacOS.py -c developer -v Tahoe -m 26 -o /tmp/Tahoe-beta-latest
+          python ./gibMacOS/gibMacOS.py -c release -v Tahoe -m 26 -o /tmp/Tahoe-stable-latest
 
       - name: Install the assistant
         run: |
-          sudo installer -pkg /tmp/Tahoe-beta-latest/InstallAssistant.pkg -target /
+          sudo installer -pkg /tmp/Tahoe-stable-latest/InstallAssistant.pkg -target /
 
       - name: Generate macOS Installer
         run: |
@@ -29,11 +30,9 @@ jobs:
             ls -l /Applications
             exit 1
           fi
+
           SIZE_MB=$(du -sm "$INSTALLER" | cut -f1)
-
-          # Add 40% headroom and ceil
           EXTRA=$(echo "($SIZE_MB * 0.4 + 0.999)/1" | bc)
-
           TOTAL_MB=$(( SIZE_MB + EXTRA ))
 
           echo "Installer size: $SIZE_MB MB"
@@ -44,7 +43,6 @@ jobs:
           sleep 10
           sudo "$INSTALLER/Contents/Resources/createinstallmedia" --volume /Volumes/Tahoe --nointeraction
 
-          # Detect created installer volume (it always starts with "Install")
           INSTALL_VOL=$(ls -d /Volumes/Install* | head -n 1 || true)
           if [ ! -d "$INSTALL_VOL" ]; then
             echo "Could not find installer volume in /Volumes"
@@ -55,9 +53,27 @@ jobs:
 
           cp -R "$INSTALL_VOL/BaseSystem" /tmp/BaseSystem
 
-      - name: Upload com.apple.recovery.boot
-        uses: actions/upload-artifact@v4
-        with:
-          name: com.apple.recovery.boot
-          path: /tmp/BaseSystem/*
-          compression-level: 9
+      - name: Package BaseSystem as ZIP
+        run: |
+          cd /tmp
+          zip -r BaseSystem.zip BaseSystem
+
+      - name: Upload to GoFile.io
+        run: |
+          SERVER=$(curl -s https://api.gofile.io/getServer | jq -r '.data.server')
+          if [ -z "$SERVER" ]; then
+            echo "Nie udało się uzyskać serwera z Gofile.io"
+            exit 1
+          fi
+          echo "Używam serwera: $SERVER"
+
+          RESPONSE=$(curl -s -X POST "https://$SERVER.gofile.io/uploadFile" \
+            -F "file=@/tmp/BaseSystem.zip" \
+            -F "description=BaseSystem from GitHub Action" \
+            -F "token=")
+
+          echo "$RESPONSE" > /tmp/upload_response.json
+          cat /tmp/upload_response.json
+
+          URL=$(jq -r '.data.downloadPage' /tmp/upload_response.json)
+          echo "✅ Plik dostępny pod adresem: $URL"
